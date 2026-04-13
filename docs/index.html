@@ -29,15 +29,107 @@
 
   .community-path { stroke: #1a1d2e; stroke-width: 0.5; transition: opacity 0.3s; cursor: pointer; }
   .community-path:hover { stroke: #fff; stroke-width: 1.5; }
-  .community-path.dimmed { opacity: 0.15; }
-  .community-path.highlighted { stroke: #fff; stroke-width: 2; }
+  .community-path.dimmed { opacity: 0.18; }
+  .community-path.highlighted { stroke: #fff; stroke-width: 2; filter: drop-shadow(0 0 6px rgba(255,255,255,0.4)); }
 
+  /* interaction hint overlay */
+  .zoom-hint {
+    position: absolute;
+    bottom: 14px;
+    left: 14px;
+    background: rgba(26,29,46,0.88);
+    border: 1px solid #2a2d3e;
+    border-radius: 8px;
+    padding: 7px 12px;
+    font-size: 0.68rem;
+    color: #8899bb;
+    pointer-events: none;
+    z-index: 10;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    backdrop-filter: blur(4px);
+  }
+  .zoom-hint span { display: flex; align-items: center; gap: 6px; }
+  .zoom-hint kbd {
+    background: #252840;
+    border: 1px solid #3a3d5e;
+    border-radius: 4px;
+    padding: 1px 5px;
+    font-size: 0.65rem;
+    color: #b0b8d8;
+    font-family: inherit;
+  }
+
+  /* multi-select badge */
+  .selection-badge {
+    position: absolute;
+    top: 10px;
+    left: 10px;
+    background: rgba(26,29,46,0.9);
+    border: 1px solid #3d4fff;
+    border-radius: 6px;
+    padding: 5px 10px;
+    font-size: 0.7rem;
+    color: #7c9fff;
+    pointer-events: none;
+    z-index: 10;
+    display: none;
+    backdrop-filter: blur(4px);
+  }
+  .selection-badge.visible { display: block; }
 
   .sidebar { width: 280px; background: #1a1d2e; border-left: 1px solid #2a2d3e; display: flex; flex-direction: column; overflow: hidden; }
 
   .sidebar-header { padding: 12px 14px 8px; border-bottom: 1px solid #2a2d3e; }
   .sidebar-header h3 { font-size: 0.85rem; color: #7c9fff; font-weight: 600; }
   .sidebar-header p { font-size: 0.72rem; color: #8899bb; margin-top: 2px; }
+
+  /* search bar */
+  .search-wrap { padding: 8px 12px; border-bottom: 1px solid #2a2d3e; position: relative; }
+  .search-wrap input {
+    width: 100%;
+    background: #252840;
+    border: 1px solid #3a3d5e;
+    border-radius: 6px;
+    padding: 5px 10px 5px 28px;
+    font-size: 0.75rem;
+    color: #e0e8ff;
+    outline: none;
+    transition: border-color 0.2s;
+  }
+  .search-wrap input::placeholder { color: #4a5270; }
+  .search-wrap input:focus { border-color: #5a6fff; }
+  .search-wrap .search-icon {
+    position: absolute;
+    left: 20px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: #4a5270;
+    font-size: 0.75rem;
+    pointer-events: none;
+  }
+  .search-wrap .clear-btn {
+    position: absolute;
+    right: 18px;
+    top: 50%;
+    transform: translateY(-50%);
+    background: none;
+    border: none;
+    color: #4a5270;
+    cursor: pointer;
+    padding: 0;
+    font-size: 0.8rem;
+    display: none;
+    line-height: 1;
+  }
+  .search-wrap .clear-btn.visible { display: block; }
+  .no-results { padding: 12px; text-align: center; font-size: 0.72rem; color: #4a5270; display: none; }
+  .no-results.visible { display: block; }
+
+  /* bar items highlighted by search */
+  .bar-item.search-match { background: rgba(61,79,255,0.06); border-radius: 4px; }
+  .bar-item.search-hidden { display: none; }
 
   .bar-list { flex: 1; overflow-y: auto; padding: 6px 0; }
   .bar-list::-webkit-scrollbar { width: 4px; }
@@ -94,12 +186,28 @@
 <div class="main">
   <div id="map-container">
     <svg id="map"></svg>
+    <!-- info panel on the bottom left -->
+    <div class="zoom-hint">
+      <span><kbd>Scroll</kbd> to zoom in / out</span>
+      <span><kbd>Drag</kbd> to pan the map</span>
+      <span><kbd>Click</kbd> community to select / deselect</span>
+    </div>
+
+    <div class="selection-badge" id="selection-badge"></div>
   </div>
   <div class="sidebar">
     <div class="sidebar-header">
       <h3 id="ranking-title">Community Rankings</h3>
-      <p id="ranking-sub">Highest -> Lowest</p>
+      <p id="ranking-sub">Click map or list to compare communities</p>
     </div>
+
+    <!-- search -->
+    <div class="search-wrap">
+      <span class="search-icon">&#9906;</span>
+      <input type="text" id="community-search" placeholder="Search communities…" autocomplete="off">
+      <button class="clear-btn" id="search-clear" title="Clear search">&#x2715;</button>
+    </div>
+    <div class="no-results" id="no-results">No communities match your search</div>
     <div class="progress-bar"><div class="progress-fill" id="progress-fill"></div></div>
     <div class="bar-list" id="bar-list"></div>
     <div class="legend">
@@ -241,18 +349,44 @@ function onMouseLeave() {
   tooltip.classList.remove('visible');
 }
 
-// isolate selected community
-let selectedComm = null;
-function onPathClick(event, d) {
-  if (selectedComm === d.properties.name_upper) {
-    selectedComm = null;
+// community set for multi-select functionality
+let selectedComms = new Set();
+
+function updateSelectionBadge() {
+  const badge = document.getElementById('selection-badge');
+  if (selectedComms.size === 0) {
+    badge.classList.remove('visible');
+  } else {
+    badge.classList.add('visible');
+    const names = [...selectedComms].join(' · ');
+    badge.textContent = `${selectedComms.size} selected: ${names}`;
+  }
+}
+
+function applySelectionStyles() {
+  if (selectedComms.size === 0) {
     g.selectAll('.community-path').classed('dimmed', false).classed('highlighted', false);
   } else {
-    selectedComm = d.properties.name_upper;
     g.selectAll('.community-path')
-      .classed('dimmed', f => f.properties.name_upper !== selectedComm)
-      .classed('highlighted', f => f.properties.name_upper === selectedComm);
+      .classed('dimmed', f => !selectedComms.has(f.properties.name_upper))
+      .classed('highlighted', f => selectedComms.has(f.properties.name_upper));
   }
+  // highlight correct matching items on map
+  document.querySelectorAll('.bar-item').forEach(el => {
+    el.style.outline = selectedComms.has(el.dataset.comm) ? '1px solid #3d4fff' : '';
+    el.style.borderRadius = selectedComms.has(el.dataset.comm) ? '4px' : '';
+  });
+  updateSelectionBadge();
+}
+
+function onPathClick(event, d) {
+  const name = d.properties.name_upper;
+  if (selectedComms.has(name)) {
+    selectedComms.delete(name);
+  } else {
+    selectedComms.add(name);
+  }
+  applySelectionStyles();
 }
 
 // color scales and animation logic
@@ -275,7 +409,7 @@ function setupDataset(dsKey) {
   const [lo, hi] = d3.extent(vals);
   colorFn = cfg.colorScale.domain([lo, hi]);
 
-  // color scale gradient
+  // color scale gradient legend
   const steps = 20;
   const stops = d3.range(steps).map(i => {
     const t = i / (steps - 1);
@@ -284,11 +418,17 @@ function setupDataset(dsKey) {
   document.getElementById('legend-bar').style.background = 
     `linear-gradient(to right, ${stops.join(',')})`;
 
+  // apply choropleth as resting state
   g.selectAll('.community-path')
-    .attr('fill', '#252840')
-    .classed('dimmed', false)
-    .classed('highlighted', false);
-  selectedComm = null;
+    .transition().duration(400)
+    .attr('fill', d => {
+      const val = cfg.getValue(d.properties);
+      return val != null ? colorFn(val) : '#252840';
+    });
+
+  // clear selection when dataset switches
+  selectedComms.clear();
+  applySelectionStyles();
 
   // right hand menu bar
   buildBarList();
@@ -305,7 +445,7 @@ function buildBarList() {
     const val = cfg.getValue(f.properties);
     const color = colorFn(val);
     const item = document.createElement('div');
-    item.className = 'bar-item';
+    item.className = 'bar-item visible'; // visible immediately for resting state
     item.dataset.comm = f.properties.name_upper;
     item.innerHTML = `
       <div class="bar-label">
@@ -313,22 +453,36 @@ function buildBarList() {
         <span class="pct">${val}%</span>
       </div>
       <div class="bar-track">
-        <div class="bar-fill" style="width:0%;background:${color}"></div>
+        <div class="bar-fill" style="width:${(val / maxVal * 100)}%;background:${color}"></div>
       </div>
     `;
+    // click on bar item selects/deselects that community
+    item.addEventListener('click', () => {
+      const name = f.properties.name_upper;
+      if (selectedComms.has(name)) {
+        selectedComms.delete(name);
+      } else {
+        selectedComms.add(name);
+      }
+      applySelectionStyles();
+      // scroll map community into view
+      g.selectAll('.community-path')
+        .filter(d => d.properties.name_upper === name)
+        .raise();
+    });
     list.appendChild(item);
   });
+
+  // apply search filter if active
+  const q = document.getElementById('community-search').value.trim();
+  if (q) filterBarList(q);
 }
 
-// reset button for map colors
+// reset button for animation
 function resetAnimation() {
   stopAnimation();
   animIndex = 0;
   document.getElementById('progress-fill').style.width = '0%';
-  document.querySelectorAll('.bar-item').forEach(el => {
-    el.classList.remove('visible');
-    el.querySelector('.bar-fill').style.width = '0%';
-  });
   document.getElementById('btn-play').textContent = 'Play';
   isPlaying = false;
 }
@@ -350,21 +504,20 @@ function revealNext() {
   const color = colorFn(val);
   const maxVal = cfg.getValue(sortedFeatures[0].properties);
 
-  // color the map region
+  // colour the map region
   g.selectAll('.community-path')
     .filter(d => d.properties.name_upper === f.properties.name_upper)
     .transition().duration(animStep * 0.8)
     .attr('fill', color);
 
-  // display community name on manu bar
+  // reveal the sidebar bar items one by one
   const items = document.querySelectorAll('.bar-item');
   if (items[animIndex]) {
     items[animIndex].classList.add('visible');
     setTimeout(() => {
       const fill = items[animIndex].querySelector('.bar-fill');
-      fill.style.width = (val / maxVal * 100) + '%';
+      if (fill) fill.style.width = (val / maxVal * 100) + '%';
     }, 50);
-    // Scroll to reveal
     items[animIndex].scrollIntoView({ block: 'nearest', behavior: 'smooth' });
   }
 
@@ -375,6 +528,14 @@ function revealNext() {
 }
 
 function startAnimation() {
+  // when starting animation, clear colouring to make animation legible
+  if (animIndex === 0) {
+    g.selectAll('.community-path').interrupt().attr('fill', '#252840');
+    document.querySelectorAll('.bar-item').forEach(el => {
+      el.classList.remove('visible');
+      el.querySelector('.bar-fill').style.width = '0%';
+    });
+  }
   if (animIndex >= sortedFeatures.length) resetAnimation();
   isPlaying = true;
   document.getElementById('btn-play').textContent = 'Pause';
@@ -393,11 +554,16 @@ document.getElementById('btn-play').addEventListener('click', () => {
 
 document.getElementById('btn-reset').addEventListener('click', () => {
   resetAnimation();
-  g.selectAll('.community-path').transition().duration(300).attr('fill', '#252840');
-  document.querySelectorAll('.bar-item').forEach(el => {
-    el.classList.remove('visible');
-    el.querySelector('.bar-fill').style.width = '0%';
-  });
+  // re-apply choropleth resting state
+  const cfg = DATASETS[currentDataset];
+  g.selectAll('.community-path').transition().duration(300)
+    .attr('fill', d => {
+      const val = cfg.getValue(d.properties);
+      return val != null ? colorFn(val) : '#252840';
+    });
+  // clear selection
+  selectedComms.clear();
+  applySelectionStyles();
 });
 
 // adjust animation speed
@@ -430,6 +596,44 @@ const zoom = d3.zoom()
   });
 svg.call(zoom);
 svg.on('dblclick.zoom', null);
+
+// search bar logic
+function filterBarList(query) {
+  const q = query.trim().toLowerCase();
+  const items = document.querySelectorAll('.bar-item');
+  let anyVisible = false;
+
+  items.forEach(el => {
+    const name = el.dataset.comm.toLowerCase();
+    const matches = !q || name.includes(q);
+    el.classList.toggle('search-hidden', !matches);
+    el.classList.toggle('search-match', !!q && matches);
+    if (matches) anyVisible = true;
+  });
+
+  document.getElementById('no-results').classList.toggle('visible', !anyVisible && !!q);
+  document.getElementById('search-clear').classList.toggle('visible', !!q);
+
+  // highlighting matching communities from search to map
+  if (q) {
+    g.selectAll('.community-path')
+      .classed('dimmed', d => !d.properties.name_upper.toLowerCase().includes(q))
+      .classed('highlighted', false);
+  } else if (selectedComms.size === 0) {
+    g.selectAll('.community-path').classed('dimmed', false).classed('highlighted', false);
+  } else {
+    applySelectionStyles();
+  }
+}
+
+document.getElementById('community-search').addEventListener('input', e => {
+  filterBarList(e.target.value);
+});
+
+document.getElementById('search-clear').addEventListener('click', () => {
+  document.getElementById('community-search').value = '';
+  filterBarList('');
+});
 
 // display map to screen with default demographic metric tab
 renderMap();
